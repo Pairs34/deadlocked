@@ -97,6 +97,7 @@ impl GameManager {
     }
 
     fn loop_duration(&self) -> Duration {
-        Duration::from_millis(10)
+        let fps = self.config.fps.max(1) as u64;
+        Duration::from_micros(1_000_000 / fps)
     }
 }

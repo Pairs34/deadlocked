@@ -1,3 +1,7 @@
+// Several helpers below are retained as a convenience layer; some are unused
+// after the UI redesign but kept for parity / future reuse.
+#![allow(dead_code)]
+
 use std::hash::Hash;
 
 use egui::{CollapsingHeader, Color32, DragValue, Event, Sense, Ui, Widget};
@@ -8,6 +12,23 @@ pub fn collapsing_open(ui: &mut Ui, title: &str, add_body: impl FnOnce(&mut Ui))
     CollapsingHeader::new(title)
         .default_open(true)
         .show(ui, add_body);
+}
+
+/// Flat non-collapsing section header with accent left border.
+pub fn section_header(ui: &mut Ui, label: &str) {
+    ui.add_space(6.0);
+    let height = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(3.0, height), Sense::hover());
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(1),
+            ui.visuals().hyperlink_color,
+        );
+        ui.add_space(5.0);
+        ui.label(egui::RichText::new(label).strong());
+    });
+    ui.add_space(2.0);
 }
 
 pub fn scroll(ui: &mut Ui, id: &str, add_content: impl FnOnce(&mut Ui)) {
@@ -37,6 +58,16 @@ pub fn drag(ui: &mut Ui, label: &str, drag: DragValue) -> bool {
     .changed()
 }
 
+pub fn drag_hover(ui: &mut Ui, label: &str, tooltip: &str, drag: DragValue) -> bool {
+    ui.horizontal(|ui| {
+        let res = ui.add(drag);
+        ui.label(label).on_hover_text(tooltip);
+        res
+    })
+    .inner
+    .changed()
+}
+
 pub fn combo_box<T: std::fmt::Debug + strum::IntoEnumIterator + PartialEq>(
     ui: &mut Ui,
     id: &str,
@@ -58,30 +89,67 @@ pub fn combo_box<T: std::fmt::Debug + strum::IntoEnumIterator + PartialEq>(
 }
 
 pub fn color_picker(ui: &mut Ui, label: &str, color: &mut Color32) -> bool {
-    let [mut r, mut g, mut b, mut a] = color.to_srgba_unmultiplied();
-    let res = ui
-        .horizontal(|ui| {
-            let (response, painter) =
-                ui.allocate_painter(ui.spacing().interact_size, Sense::hover());
+    // Material-3 style palette picker: swatch row + native edit popup for
+    // fine-grained adjustments. Returns true if the colour was changed.
+    use crate::ui::color::Colors;
+    const PRESETS: [Color32; 14] = [
+        Colors::RED,
+        Colors::ORANGE,
+        Colors::YELLOW,
+        Colors::GREEN,
+        Colors::TEAL,
+        Colors::BLUE,
+        Colors::PURPLE,
+        Color32::WHITE,
+        Color32::from_rgb(255, 192, 203), // pink
+        Color32::from_rgb(255, 105, 180), // hot pink
+        Color32::from_rgb(0, 200, 255),   // cyan
+        Color32::from_rgb(150, 75, 0),    // brown
+        Color32::from_rgb(50, 50, 50),    // dark grey
+        Color32::BLACK,
+    ];
+
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        // Current colour preview (also opens the native edit popup)
+        let resp = ui.color_edit_button_srgba(color);
+        if resp.changed() {
+            changed = true;
+        }
+        ui.add_space(4.0);
+
+        // Preset swatches
+        for preset in PRESETS {
+            let size = egui::vec2(18.0, 18.0);
+            let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+            let painter = ui.painter();
+            let selected = (color.r(), color.g(), color.b()) == (preset.r(), preset.g(), preset.b());
             painter.rect_filled(
-                response.rect,
-                ui.style().visuals.widgets.inactive.corner_radius,
-                *color,
+                rect,
+                egui::CornerRadius::same(5),
+                preset,
             );
-            let mut res = ui.add(DragValue::new(&mut r).prefix("r: "));
-            res = res.union(ui.add(DragValue::new(&mut g).prefix("g: ")));
-            res = res.union(ui.add(DragValue::new(&mut b).prefix("b: ")));
-            res = res.union(ui.add(DragValue::new(&mut a).prefix("a: ")));
+            if selected {
+                painter.rect_stroke(
+                    rect.expand(1.5),
+                    egui::CornerRadius::same(6),
+                    egui::Stroke::new(1.5, Colors::TEXT),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            if response.clicked() {
+                let a = color.a();
+                *color = Color32::from_rgba_unmultiplied(preset.r(), preset.g(), preset.b(), a);
+                changed = true;
+            }
+            ui.add_space(2.0);
+        }
+
+        if !label.is_empty() {
+            ui.add_space(6.0);
             ui.label(label);
-            res
-        })
-        .inner;
-
-    let changed = res.changed();
-    if changed {
-        *color = Color32::from_rgba_premultiplied(r, g, b, a);
-    }
-
+        }
+    });
     changed
 }
 

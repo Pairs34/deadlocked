@@ -42,8 +42,9 @@ impl WindowContext {
                 .with_title("deadlocked_overlay")
         } else {
             winit::window::WindowAttributes::default()
-                .with_inner_size(winit::dpi::LogicalSize::new(750, 450))
-                .with_title("deadlocked")
+                .with_inner_size(winit::dpi::LogicalSize::new(940, 580))
+                .with_min_inner_size(winit::dpi::LogicalSize::new(800u32, 520u32))
+                .with_title("Pairs Cheat")
         };
 
         let config_template_builder = if overlay {
@@ -255,42 +256,92 @@ fn prep_ctx(ctx: &mut egui::Context, accent_color: egui::Color32) {
 
 fn gui_style(style: &mut Style, accent_color: egui::Color32) {
     style.interaction.selectable_labels = false;
-    for font in style.text_styles.iter_mut() {
-        font.1.size = 16.0;
-    }
-    //style.visuals.override_text_color = Some(Color32::WHITE);
 
+    // --- Typography ---
+    for font in style.text_styles.iter_mut() {
+        font.1.size = 14.0;
+    }
+    // Bigger heading
+    if let Some(h) = style.text_styles.get_mut(&egui::TextStyle::Heading) {
+        h.size = 18.0;
+    }
+
+    // --- Panel / window backgrounds ---
     style.visuals.window_fill = Colors::BASE;
     style.visuals.panel_fill = Colors::BASE;
     style.visuals.extreme_bg_color = Colors::BACKDROP;
+    style.visuals.window_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 16));
+    style.visuals.window_shadow = egui::Shadow {
+        offset: [0, 6].into(),
+        blur: 22,
+        spread: 0,
+        color: Color32::from_black_alpha(140),
+    };
 
-    let bg_stroke = Stroke::new(1.0, Colors::SUBTEXT);
-    let fg_stroke = Stroke::new(1.0, Colors::TEXT);
-    let dark_stroke = Stroke::new(1.0, Colors::BASE);
+    // --- Corner radii (more modern, slightly larger) ---
+    let r6 = egui::CornerRadius::same(6);
+    let r8 = egui::CornerRadius::same(8);
+    style.visuals.window_corner_radius = r8;
+    style.visuals.menu_corner_radius = r8;
 
-    style.visuals.selection.bg_fill = accent_color;
-    style.visuals.selection.stroke = dark_stroke;
+    // --- Selection ---
+    style.visuals.selection.bg_fill =
+        Color32::from_rgba_unmultiplied(accent_color.r(), accent_color.g(), accent_color.b(), 210);
+    style.visuals.selection.stroke = Stroke::new(1.0, accent_color);
 
-    style.visuals.widgets.active.bg_fill = Colors::HIGHLIGHT;
-    style.visuals.widgets.active.bg_stroke = bg_stroke;
-    style.visuals.widgets.active.fg_stroke = fg_stroke;
-    style.visuals.widgets.active.weak_bg_fill = Colors::HIGHLIGHT;
+    // --- Hyperlink ---
+    style.visuals.hyperlink_color = accent_color;
 
-    style.visuals.widgets.hovered.bg_fill = Colors::HIGHLIGHT;
-    style.visuals.widgets.hovered.bg_stroke = bg_stroke;
-    style.visuals.widgets.hovered.fg_stroke = fg_stroke;
-    style.visuals.widgets.hovered.weak_bg_fill = Colors::HIGHLIGHT;
+    // Subtle separator line
+    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 18));
 
-    style.visuals.widgets.inactive.bg_fill = Colors::HIGHLIGHT;
-    style.visuals.widgets.inactive.fg_stroke = fg_stroke;
-    style.visuals.widgets.inactive.weak_bg_fill = Colors::HIGHLIGHT;
+    // --- Widget: inactive (default resting state) ---
+    style.visuals.widgets.inactive.bg_fill      = Colors::SURFACE;
+    style.visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(30, 32, 42);
+    style.visuals.widgets.inactive.bg_stroke    = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 24));
+    style.visuals.widgets.inactive.fg_stroke    = Stroke::new(1.5, Colors::TEXT);
+    style.visuals.widgets.inactive.corner_radius = r6;
 
-    style.visuals.widgets.noninteractive.bg_fill = Colors::HIGHLIGHT;
-    style.visuals.widgets.noninteractive.fg_stroke = fg_stroke;
-    style.visuals.widgets.noninteractive.weak_bg_fill = Colors::HIGHLIGHT;
+    // --- Widget: hovered ---
+    style.visuals.widgets.hovered.bg_fill      = Colors::HIGHLIGHT;
+    style.visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(46, 49, 68);
+    style.visuals.widgets.hovered.bg_stroke    = Stroke::new(1.0, Color32::from_rgba_unmultiplied(
+        accent_color.r(), accent_color.g(), accent_color.b(), 90,
+    ));
+    style.visuals.widgets.hovered.fg_stroke    = Stroke::new(1.5, Colors::TEXT);
+    style.visuals.widgets.hovered.corner_radius = r6;
+    style.visuals.widgets.hovered.expansion    = 1.0;
 
-    style.visuals.widgets.open.bg_fill = Colors::HIGHLIGHT;
-    style.visuals.widgets.open.bg_stroke = bg_stroke;
-    style.visuals.widgets.open.fg_stroke = fg_stroke;
-    style.visuals.widgets.open.weak_bg_fill = Colors::HIGHLIGHT;
+    // --- Widget: active (pressed / selected) ---
+    style.visuals.widgets.active.bg_fill      = Color32::from_rgba_unmultiplied(
+        accent_color.r(), accent_color.g(), accent_color.b(), 210,
+    );
+    style.visuals.widgets.active.weak_bg_fill = Color32::from_rgba_unmultiplied(
+        accent_color.r(), accent_color.g(), accent_color.b(), 170,
+    );
+    style.visuals.widgets.active.bg_stroke    = Stroke::new(1.0, accent_color);
+    style.visuals.widgets.active.fg_stroke    = Stroke::new(1.5, Colors::TEXT);
+    style.visuals.widgets.active.corner_radius = r6;
+
+    // --- Widget: open (e.g. open combo-box) ---
+    style.visuals.widgets.open.bg_fill      = Color32::from_rgb(44, 47, 64);
+    style.visuals.widgets.open.weak_bg_fill = Color32::from_rgb(38, 41, 56);
+    style.visuals.widgets.open.bg_stroke    = Stroke::new(1.0, Color32::from_rgba_unmultiplied(
+        accent_color.r(), accent_color.g(), accent_color.b(), 110,
+    ));
+    style.visuals.widgets.open.fg_stroke    = Stroke::new(1.5, Colors::TEXT);
+    style.visuals.widgets.open.corner_radius = r6;
+
+    // --- Widget: noninteractive (labels, panels) ---
+    style.visuals.widgets.noninteractive.bg_fill      = Colors::BASE;
+    style.visuals.widgets.noninteractive.weak_bg_fill = Colors::BACKDROP;
+    style.visuals.widgets.noninteractive.fg_stroke    = Stroke::new(1.0, Colors::SUBTEXT);
+    style.visuals.widgets.noninteractive.corner_radius = r6;
+
+    // --- Spacing ---
+    style.spacing.item_spacing = egui::vec2(8.0, 7.0);
+    style.spacing.button_padding = egui::vec2(11.0, 6.0);
+    style.spacing.indent = 14.0;
+    style.spacing.slider_width = 160.0;
+    style.spacing.combo_width = 140.0;
 }

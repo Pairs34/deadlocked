@@ -19,6 +19,7 @@ use crate::{
     },
     cs2::entity::weapon::Weapon,
     data::{Data, SoundType},
+    lang::Strings,
     message::{GameMessage, GameStatus, UiMessage},
     os::crash::STACKTRACE_SENT,
     ui::{
@@ -56,17 +57,29 @@ pub struct App {
     pub current_tab: Tab,
     pub aimbot_tab: AimbotTab,
     pub aimbot_weapon: Weapon,
+    /// Free-text filter applied across all settings UI (matches labels).
+    pub search_query: String,
 }
 
 impl App {
     pub fn new(channel: Channel<GameMessage, UiMessage>, data: Arc<Mutex<Data>>) -> Self {
-        // read config
-        let config = parse_config(&CONFIG_PATH.join(DEFAULT_CONFIG_NAME));
-        // override config if invalid
-        write_config(&config, &CONFIG_PATH.join(DEFAULT_CONFIG_NAME));
-        let grenades = read_grenades();
-
         let app_config = read_app_config();
+
+        // Pick the config file to load on startup.
+        // 1. If app_config.default_config is set AND the file exists → load that.
+        // 2. Else fall back to DEFAULT_CONFIG_NAME (legacy behaviour).
+        let startup_path = {
+            let candidate = app_config
+                .default_config
+                .as_ref()
+                .map(|name| CONFIG_PATH.join(name))
+                .filter(|p| p.exists());
+            candidate.unwrap_or_else(|| CONFIG_PATH.join(DEFAULT_CONFIG_NAME))
+        };
+        let config = parse_config(&startup_path);
+        // override config if invalid / ensure file exists
+        write_config(&config, &startup_path);
+        let grenades = read_grenades();
 
         // was selected to be no,
         if !app_config.first_launch && !app_config.send_stacktraces {
@@ -85,7 +98,7 @@ impl App {
 
             app_config,
             config,
-            current_config: CONFIG_PATH.join(DEFAULT_CONFIG_NAME),
+            current_config: startup_path,
             available_configs: available_configs(),
             new_config_name: String::new(),
 
@@ -101,9 +114,15 @@ impl App {
             current_tab: Tab::Aimbot,
             aimbot_tab: AimbotTab::Global,
             aimbot_weapon: Weapon::Ak47,
+            search_query: String::new(),
         };
         ret.send_config();
         ret
+    }
+
+    /// Returns the active language string table. Use this in all GUI render functions.
+    pub fn lang(&self) -> &'static Strings {
+        self.app_config.language.strings()
     }
 
     fn create_window(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {

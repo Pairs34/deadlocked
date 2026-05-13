@@ -7,7 +7,7 @@ use crate::{
     config::{BoxMode, DrawMode},
     cs2::bones::Bones,
     data::{Data, PlayerData, SoundType},
-    math::world_to_screen,
+    math::{world_to_screen, world_to_screen_loose},
     ui::app::App,
 };
 
@@ -23,6 +23,11 @@ impl App {
         } else {
             None
         };
+
+        // Animated footstep rings — drawn under the box so they don't clutter names
+        if self.config.player.sound.enabled {
+            self.draw_sound_rings(painter, player, sound, data);
+        }
 
         self.player_box(painter, player, data, sound_alpha);
         self.skeleton(painter, player, data, sound_alpha);
@@ -118,10 +123,10 @@ impl App {
         let top = midpoint + vec3(0.0, 0.0, half_height);
         let bottom = midpoint - vec3(0.0, 0.0, half_height);
 
-        let Some(top) = world_to_screen(&top, data) else {
+        let Some(top) = world_to_screen_loose(&top, data) else {
             return;
         };
-        let Some(bottom) = world_to_screen(&bottom, data) else {
+        let Some(bottom) = world_to_screen_loose(&bottom, data) else {
             return;
         };
         let half_height = bottom.y - top.y;
@@ -202,14 +207,16 @@ impl App {
 
         let mut offset = 0.0;
         let font_size = self.config.hud.font_size * esp_scale;
-        let text_color = Self::alpha(self.config.hud.text_color, alpha);
+        let name_color  = Self::alpha(self.config.player.name_color,         alpha);
+        let weapon_color = Self::alpha(self.config.player.weapon_icon_color, alpha);
+        let tag_color   = Self::alpha(self.config.player.tag_color,          alpha);
         if self.config.player.player_name {
             self.text_sized(
                 painter,
                 &player.name,
                 pos2(tr.x + ew, tr.y + offset),
                 Align2::LEFT_TOP,
-                Some(text_color),
+                Some(name_color),
                 font_size,
             );
             offset += font_size;
@@ -221,7 +228,7 @@ impl App {
                 Align2::LEFT_TOP,
                 "\u{e00f}",
                 icon_font.clone(),
-                text_color,
+                tag_color,
             );
             offset += font_size;
         }
@@ -232,7 +239,7 @@ impl App {
                 Align2::LEFT_TOP,
                 "\u{e017}",
                 icon_font.clone(),
-                text_color,
+                tag_color,
             );
             offset += font_size;
         }
@@ -243,7 +250,7 @@ impl App {
                 Align2::LEFT_TOP,
                 "\u{e01e}",
                 icon_font.clone(),
-                text_color,
+                tag_color,
             );
         }
 
@@ -253,7 +260,7 @@ impl App {
                 Align2::CENTER_TOP,
                 player.weapon.to_icon(),
                 icon_font.clone(),
-                text_color,
+                weapon_color,
             );
             if player.ammo.0 >= 0 {
                 self.text_sized(
@@ -261,7 +268,7 @@ impl App {
                     format!("{}/{}", player.ammo.0, player.ammo.1),
                     pos2(bl.x + half_width, bl.y + font_size),
                     Align2::CENTER_TOP,
-                    Some(text_color),
+                    Some(weapon_color),
                     font_size,
                 );
             }
@@ -274,7 +281,8 @@ impl App {
             .position
             .distance(player.position)
             .max(1.0);
-        let esp_scale = (500.0 / distance).clamp(0.25, 1.0);
+        // Same clamp as player_box to maintain visual consistency at range.
+        let esp_scale = (500.0 / distance).clamp(0.4, 1.0);
 
         let mut color = match &self.config.player.draw_skeleton {
             DrawMode::None => return,
@@ -329,16 +337,87 @@ impl App {
         painter.circle_stroke(pos, height / 2.0, stroke);
     }
 
-    pub fn update_player_sounds(&mut self) {
-        let data = self.data.lock();
+    /// Draw animated expanding rings at the player's feet when a footstep was recently heard.
+    /// Three rings staggered in phase create a ripple / sonar wave effect.
+    fn draw_sound_rings(
+        &self,
+        painter: &Painter,
+        player: &PlayerData,
+        sound: Option<&(Instant, SoundType)>,
+        data: &Data,
+    ) {
+        let Some((time, sound_type)) = sound else {
+            return;
+        };
+        if *sound_type != SoundType::Footstep {
+            return;
+        }
+
+        // Check distance gate (same as sound_alpha uses)
+        let max_dist = self.config.player.sound.footstep_diameter;
+        if data.local_player.position.distance(player.position) > max_dist {
+            return;
+        }
+
+        let Some(feet_screen) = world_to_screen(&player.position, data) else {
+            return;
+        };
+
+        let elapsed = time.elapsed().as_secs_f32();
+        let total = self.total_sound_duration().as_secs_f32();
+        if elapsed >= total {
+            return;
+        }
+
+        // Global fade: 1.0 at start → 0.0 at end of sound duration
+        let global_alpha = 1.0 - (elapsed / total);
+
+        const NUM_RINGS: usize = 3;
+        const RING_PERIOD: f32 = 0.7; // seconds for one ring to expand fully
+        const MAX_RADIUS: f32 = 22.0;
+        const STROKE_WIDTH: f32 = 1.5;
+
+        for i in 0..NUM_RINGS {
+            let phase_offset = i as f32 * (RING_PERIOD / NUM_RINGS as f32);
+            let t = ((elapsed - phase_offset).max(0.0) % RING_PERIOD) / RING_PERIOD;
+            let radius = t * MAX_RADIUS;
+            let ring_alpha = (1.0 - t) * global_alpha;
+            if ring_alpha <= 0.01 {
+                continue;
+            }
+
+            let a = (ring_alpha * 220.0) as u8;
+            let color = Color32::from_rgba_unmultiplied(80, 200, 255, a);
+            painter.circle_stroke(feet_screen, radius, Stroke::new(STROKE_WIDTH, color));
+        }
+    }
+
+    pub fn update_player_sounds(&mut self) {        let data = self.data.lock();
 
         for player in &data.players {
             let Some(sound) = &player.sound else {
                 continue;
             };
 
-            self.player_sounds
-                .insert(player.steam_id, (Instant::now(), *sound));
+            // Only create a NEW sound event when:
+            //   1. There is no existing entry (first time we detect this player making sound)
+            //   2. The sound TYPE changed (e.g. walking → shooting)
+            //   3. Enough time has passed that the previous ring cycle has finished
+            //      animating (each ring takes RING_PERIOD=0.7s; after ~0.6s we restart)
+            //
+            // Overwriting Instant::now() every frame kept elapsed ≈ 0 forever,
+            // which locked ring radius to 0 — making footstep rings invisible.
+            const RING_CYCLE: Duration = Duration::from_millis(600);
+            let needs_insert = match self.player_sounds.get(&player.steam_id) {
+                None => true,
+                Some((prev_time, prev_sound)) => {
+                    *prev_sound != *sound || prev_time.elapsed() >= RING_CYCLE
+                }
+            };
+            if needs_insert {
+                self.player_sounds
+                    .insert(player.steam_id, (Instant::now(), *sound));
+            }
         }
 
         let total_duration = self.total_sound_duration();

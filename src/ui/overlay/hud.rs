@@ -240,4 +240,28 @@ impl App {
             stroke,
         );
     }
+
+    /// Brand watermark in the top-left corner of the overlay.
+    pub fn draw_watermark(&self, painter: &Painter, data: &Data) {
+        let pos = pos2(12.0, 10.0);
+        let size = 20.0_f32;
+        // Soft black shadow for readability on bright scenes.
+        self.text_sized(
+            painter,
+            "Pairs Cheat",
+            pos2(pos.x + 1.0, pos.y + 1.0),
+            Align2::LEFT_TOP,
+            Some(Color32::from_rgba_unmultiplied(0, 0, 0, 220)),
+            size,
+        );
+        self.text_sized(
+            painter,
+            "Pairs Cheat",
+            pos,
+            Align2::LEFT_TOP,
+            Some(self.config.accent_color),
+            size,
+        );
+        let _ = data;
+    }
 }

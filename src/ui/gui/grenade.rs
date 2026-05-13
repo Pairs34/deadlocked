@@ -6,21 +6,20 @@ use crate::{
         app::App,
         color::Colors,
         grenades::{Grenade, write_grenades},
-        gui::helpers::{collapsing_open, scroll},
+        gui::{components::titled_card, helpers::scroll},
     },
 };
 
 impl App {
     pub fn grenade_settings(&mut self, ui: &mut Ui) {
-        scroll(ui, "hud", |ui| {
+        scroll(ui, "grenade", |ui| {
             if self.current_grenade.is_some() {
                 self.edit_grenade(ui);
             } else {
                 self.record_grenade(ui);
             }
 
-            // grenade list
-            ui.collapsing("Grenade List", |ui| {
+            titled_card(ui, "Grenade List", |ui| {
                 self.grenade_list(ui);
             });
         });
@@ -67,7 +66,7 @@ impl App {
     }
 
     fn record_grenade(&mut self, ui: &mut Ui) {
-        collapsing_open(ui, "Add Grenade", |ui| {
+        titled_card(ui, "Add Grenade", |ui| {
             let data = self.data.lock();
 
             if !data.in_game {
@@ -120,7 +119,7 @@ impl App {
     }
 
     fn edit_grenade(&mut self, ui: &mut Ui) {
-        collapsing_open(ui, "Edit Grenade", |ui| {
+        titled_card(ui, "Edit Grenade", |ui| {
             let (map, index) = match &self.current_grenade {
                 Some(grenade) => grenade,
                 None => return,

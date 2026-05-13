@@ -464,17 +464,30 @@ impl Player {
     pub fn visible(&self, cs2: &CS2, local_player: &Player) -> bool {
         if let Some(bvh) = &cs2.bvh {
             let eye_pos = local_player.eye_position(cs2);
-            const CHECKED_BONES: [Bones; 5] = [
+            // Sample a wide spread of bones — head, torso, feet, hands.
+            // The earlier "any 1 of 5 bones" check was so permissive that
+            // a single visible fingertip flagged a fully-covered enemy as
+            // visible, defeating the Visible Only toggle. Require at least
+            // TWO sampled bones to have line-of-sight before treating the
+            // player as visible. This still catches partial exposure
+            // (peeking a corner) without leaking through walls when a
+            // hand bone happens to clip into open space.
+            const CHECKED_BONES: [Bones; 7] = [
                 Bones::Head,
+                Bones::Neck,
+                Bones::Spine3,
                 Bones::LeftFoot,
                 Bones::RightFoot,
                 Bones::LeftHand,
                 Bones::RightHand,
             ];
-            if !CHECKED_BONES
+            let visible_count = CHECKED_BONES
                 .iter()
-                .any(|bone| bvh.has_line_of_sight(eye_pos, self.bone_position(cs2, bone.u64())))
-            {
+                .filter(|bone| {
+                    bvh.has_line_of_sight(eye_pos, self.bone_position(cs2, bone.u64()))
+                })
+                .count();
+            if visible_count < 2 {
                 return false;
             }
         } else {
@@ -525,23 +538,26 @@ impl Player {
         let current_weapon = self.weapon(cs2);
 
         let is_jumping = velocity.z > 100.0 && self.is_in_air(cs2);
-        // knife walking speed is 250 units/s
-        let is_walking = speed > 100.0;
         let is_standing = speed < 10.0;
 
         // check for scoping (only for snipers)
         let is_scoped = self.is_scoped(cs2);
 
-        if is_walking || is_standing {
+        // Completely stationary and not jumping/falling — silent
+        if is_standing && !is_jumping && velocity.z > -200.0 {
             return None;
         }
 
-        // awp and scout are not the only snipers...
+        // Scoped sniper makes scope-in/out click
         if is_scoped && WeaponClass::from_string(current_weapon.as_ref()) == WeaponClass::Sniper {
-            Some(SoundType::Weapon)
-        } else if speed > 150.0 || is_jumping || velocity.z < -200.0 {
+            return Some(SoundType::Weapon);
+        }
+
+        // Running (>100 u/s), jumping, or landing
+        if speed > 100.0 || is_jumping || velocity.z < -200.0 {
             Some(SoundType::Footstep)
         } else {
+            // Slow shift-walk (< 100 u/s) — nearly silent, no footstep
             None
         }
     }
@@ -552,6 +568,19 @@ impl Player {
         if current_alpha != flash_alpha {
             cs2.process
                 .write(self.pawn + cs2.offsets.pawn.flash_alpha, flash_alpha);
+        }
+    }
+
+    /// Mark this player as spotted by the local player so they appear on the CS2 minimap.
+    pub fn set_spotted_by_local(&self, cs2: &CS2, local_pawn_index: u64) {
+        if local_pawn_index >= 64 {
+            return;
+        }
+        let addr = self.pawn + cs2.offsets.pawn.spotted_state + cs2.offsets.spotted_state.mask;
+        let current: i64 = cs2.process.read(addr);
+        let bit = 1i64 << local_pawn_index;
+        if current & bit == 0 {
+            cs2.process.write(addr, current | bit);
         }
     }
 

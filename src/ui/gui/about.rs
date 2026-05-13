@@ -9,7 +9,7 @@ impl App {
             .collapsible(false)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.colored_label(self.config.accent_color, "deadlocked");
+                    ui.colored_label(self.config.accent_color, "Pairs Cheat");
                     ui.label(format!("Commit: #{COMMIT}"));
 
                     if ui.button("Close").clicked() {

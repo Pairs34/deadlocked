@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use egui::{Align2, Color32, Painter, Pos2, Stroke};
+use egui::{Align2, Color32, FontId, Painter, Pos2, Stroke};
 
 use crate::{
     cs2::entity::{
@@ -25,20 +25,26 @@ impl App {
                 let Some(position) = world_to_screen(position, data) else {
                     return;
                 };
-                self.text(
-                    painter,
-                    format!("{weapon}"),
-                    position,
-                    Align2::CENTER_CENTER,
-                    None,
-                );
+                // Use the custom icon font so we render a proper weapon icon
+                // instead of a plain-text name. The icon font is in the
+                // Monospace family (inserted at index 0 in prep_ctx).
+                let icon = weapon.to_icon();
+                let icon_font = FontId::monospace(self.config.hud.icon_size);
+                let text_color = self.config.hud.text_color;
+                if icon.is_empty() {
+                    // Unknown weapon — fall back to text name
+                    self.text(painter, format!("{weapon}"), position, Align2::CENTER_CENTER, None);
+                } else {
+                    painter.text(position, Align2::CENTER_CENTER, icon, icon_font, text_color);
+                }
                 if ammo.0 >= 0 {
-                    self.text(
+                    self.text_sized(
                         painter,
                         format!("{}/{}", ammo.0, ammo.1),
-                        egui::pos2(position.x, position.y + self.config.hud.font_size),
+                        egui::pos2(position.x, position.y + self.config.hud.icon_size),
                         Align2::CENTER_CENTER,
                         None,
+                        self.config.hud.font_size,
                     );
                 }
             }

@@ -16,8 +16,8 @@ use crate::{
 
 #[derive(Debug, Default)]
 pub struct Triggerbot {
-    shot_start: Option<Instant>,
-    shot_end: Option<Instant>,
+    pub shot_start: Option<Instant>,
+    pub shot_end: Option<Instant>,
     pub active: bool,
 }
 
@@ -44,6 +44,7 @@ impl CS2 {
                     return;
                 }
             }
+            KeyMode::Always => {} // always active; no key check needed
         }
 
         if self.trigger.shot_start.is_some() || self.trigger.shot_end.is_some() {
@@ -70,8 +71,56 @@ impl CS2 {
             return;
         }
 
-        let Some(player) = local_player.crosshair_entity(self) else {
-            return;
+        let player = match local_player.crosshair_entity(self) {
+            Some(p) => p,
+            None if config.wallbang => {
+                // Wallbang: the game says nothing is under the crosshair
+                // because a wall is in the way. Pick the enemy whose nearest
+                // bone is closest to the aim line, regardless of LoS — the
+                // shot will be fired and the game decides if the bullet
+                // penetrates.
+                let view_angles = local_player.view_angles(self);
+                let mut best: Option<(Player, f32)> = None;
+                let bones = &[
+                    Bones::Head,
+                    Bones::Neck,
+                    Bones::Spine3,
+                    Bones::Spine1,
+                    Bones::Hip,
+                ];
+                for player in self.players.iter().copied() {
+                    if player.pawn == local_player.pawn {
+                        continue;
+                    }
+                    if !player.is_valid(self) {
+                        continue;
+                    }
+                    if !self.is_ffa() && player.team(self) == local_player.team(self) {
+                        continue;
+                    }
+                    for bone in bones {
+                        let pos = player.bone_position(self, bone.u64());
+                        let angle = self.angle_to_target(&local_player, &pos, &Vec2::ZERO);
+                        let fov = angles_to_fov(&view_angles, &angle);
+                        // ~3° cone, scaled looser at distance
+                        let dist =
+                            (local_player.position(self) - player.position(self)).length();
+                        let threshold = 3.0 + (dist / 1000.0).min(3.0);
+                        if fov <= threshold {
+                            match best {
+                                None => best = Some((player, fov)),
+                                Some((_, bf)) if fov < bf => best = Some((player, fov)),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                let Some((p, _)) = best else {
+                    return;
+                };
+                p
+            }
+            None => return,
         };
 
         if !self.is_ffa() && player.team(self) == local_player.team(self) {
@@ -94,9 +143,10 @@ impl CS2 {
         }
 
         let mean = (*config.delay.start() + *config.delay.end()) as f32 / 2.0;
-        let std_dev = (*config.delay.end() - *config.delay.start()) as f32 / 2.0;
+        // Ensure std_dev is positive so Normal::new never fails (happens when start == end).
+        let std_dev = ((*config.delay.end() - *config.delay.start()) as f32 / 2.0).max(1.0);
 
-        let normal = rand_distr::Normal::new(mean, std_dev).unwrap();
+        let normal = rand_distr::Normal::new(mean, std_dev).expect("std_dev >= 1.0");
         use rand_distr::Distribution as _;
         let delay = normal.sample(&mut rng()).max(0.0) as u64;
 

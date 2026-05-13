@@ -1,5 +1,7 @@
 # Deadlocked — Mimari ve Yapı Analizi
 
+> Son güncelleme: 13 Mayıs 2026 · upstream commit `03fda12` + yerel iyileştirmeler
+
 ## Genel Bakış
 
 **Deadlocked**, Counter-Strike 2 (CS2) için yalnızca Linux'ta çalışan, Rust ile yazılmış bir harici oyun aracıdır. Oyun sürecinin belleğini doğrudan okuyarak çeşitli özellikler sunar. Uygulama iki ana iş parçacığı üzerinde çalışır: **oyun döngüsü** ve **UI (arayüz) döngüsü**.
@@ -106,12 +108,13 @@ CS2
   ├── target: Target            ← aimbot hedef seçimi
   ├── players: Vec<Player>      ← önbelleğe alınmış oyuncu listesi
   ├── entities: Vec<Entity>     ← önbelleğe alınmış varlık listesi
-  ├── recoil: Recoil            ← RCS durumu
-  ├── aim: Aimbot               ├── özelliklerin aktif/pasif durumu
+  ├── recoil: Recoil            ← RCS durumu (humanized)
+  ├── aim: Aimbot               ├── özelliklerin aktif/pasif durumu + velocity
   ├── trigger: Triggerbot       │
   ├── esp: EspToggle            │
   ├── weapon: Weapon            ← yerel oyuncunun silahı
-  └── planted_c4: Option<PlantedC4>
+  ├── planted_c4: Option<PlantedC4>
+  └── visibility_cache: HashMap<u64, Instant>  ← [YENİ] ESP hysteresis
 ```
 
 **`run()` çalışma sırası:**
@@ -123,11 +126,11 @@ input.update()
   → no_flash()
   → fov_changer()
   → esp_toggle()
-  → rcs()
   → triggerbot()
   → triggerbot_shoot()
   → find_target()
-  → aimbot()
+  → aimbot() → bool           [YENİ] true döndürüyorsa RCS ÇALIŞMAZ
+  → rcs()     (yalnızca aimbot inactive ise)
 ```
 
 #### `find_offsets.rs` — Dinamik Ofset Keşfi
@@ -181,12 +184,18 @@ enum Entity {
 
 | Özellik | Dosya | Açıklama |
 |---------|-------|----------|
-| **Aimbot** | `aimbot.rs` | Hold/Toggle modda çalışır; en küçük FOV'lu kemiği hedefler; mesafeye göre FOV ayarı; görünürlük kontrolü |
+| **Aimbot** | `aimbot.rs` | Hold/Toggle modda çalışır; en küçük FOV'lu kemiği hedefler; **[İYİLEŞTİRİLDİ]** velocity-tabanlı üstel lerp smoothing; aşım önleme; hedef kaybolunca hız sönümleme |
 | **Triggerbot** | `triggerbot.rs` | Crosshair düşmanda olduğunda ateşler; normal dağılımlı rastgele gecikme; kafa-sadece modu |
-| **RCS** | `rcs.rs` | Aim punch ofsetini mouse hareketi ile dengeler; ayarlanabilir güç |
+| **RCS** | `rcs.rs` | **[İYİLEŞTİRİLDİ]** Humanized: velocity + accel_history (VecDeque<12>); soft_clamp_acceleration; yalnızca aimbot inactive ise çalışır |
 | **No Flash** | `no_flash.rs` | Flash alpha değerini sıfırlar |
 | **FOV Changer** | `fov_changer.rs` | Oyuncu FOV değerini belleğe yazar |
 | **ESP Toggle** | `esp_toggle.rs` | ESP'yi tuş ile açıp kapatır |
+
+**Yeni math yardımcıları** (RCS humanization için):
+- `weighted_average(history)` — son ölçümleri artan ağırlıkla ortalar
+- `compute_max_acceleration(history, multiplier, range, fallback)` — history'e göre dinamik hız limiti
+- `soft_clamp_acceleration(accel, max, decay)` — hard clip yerine üstel azalma
+- `record_acceleration(history, value, max_size)` — 12 elemanlı kayan pencere
 
 #### `target.rs` — Hedef Seçimi
 
@@ -258,13 +267,13 @@ Her `WindowContext` bir OpenGL bağlamı (glutin/EGL) + egui renderer (egui_glow
 
 #### `gui/` — Ayarlar Penceresi
 
-Sol sidebar + içerik paneli düzeni. Sekmeler:
+Sol sidebar (140px, `BACKDROP` arka plan) + içerik paneli düzeni. **[İYİLEŞTİRİLDİ]** Tüm butonlar tam genişlik; renkli durum göstergesi (● Connected / ● Waiting…). Sekmeler:
 
 | Sekme | İçerik |
 |-------|--------|
 | **Aimbot** | Aimbot, triggerbot, RCS ayarları; silah bazlı geçersiz kılma |
 | **Player** | ESP rengi, iskelet, sağlık çubuğu, isim, mesafe |
-| **HUD** | Bomba zamanlayıcı, düşürülmüş silahlar, grenad izleri, FOV dairesi |
+| **HUD** | Bomba zamanlayıcı, düşürülmüş silahlar, grenad izleri, FOV dairesi, **[YENİ]** CrosshairConfig, **[YENİ]** spectator listesi |
 | **Grenades** | Özel grenad pozisyonları (harita başına) |
 | **Unsafe** | No-flash, FOV changer, duman rengi/devre dışı |
 | **Config** | Çoklu config profili yönetimi (TOML) |
@@ -300,9 +309,21 @@ Config (TOML serileştirme)
   │     └── triggerbot_hotkey: KeyCode
   ├── player: PlayerConfig      ← ESP görsel ayarları
   ├── hud: HudConfig            ← HUD elemanları
+  │     └── sniper_crosshair: CrosshairConfig  ← [YENİ] genişletilmiş crosshair yapısı
   ├── misc: UnsafeConfig        ← no-flash, FOV, duman
   ├── accent_color: Color32
-  └── fps: u32                  ← oyun döngüsü hedef FPS
+  └── fps: u32                  ← artık kullanılmıyor; loop sabit 10ms
+```
+
+`HudConfig`'e eklenen **`CrosshairConfig`** struct'ı:
+```rust
+pub struct CrosshairConfig {
+    pub enabled: bool,
+    pub color: Color32,
+    pub line_length: f32,  // varsayılan 50.0
+    pub line_width: f32,   // varsayılan 2.0
+    pub gap: f32,          // varsayılan 20.0
+}
 ```
 
 Config dosyaları `~/.config/deadlocked/` altında TOML formatında saklanır. Birden fazla profil desteklenir.
@@ -320,6 +341,7 @@ Data
   ├── weapon: Weapon              ← yerel oyuncunun silahı
   ├── players: Vec<PlayerData>    ← düşman oyuncular
   ├── friendlies: Vec<PlayerData> ← takım arkadaşları (FFA modunda)
+  ├── spectators: Vec<String>     ← [YENİ] sizi izleyen oyuncuların isimleri
   ├── local_player: PlayerData
   ├── entities: Vec<EntityInfo>   ← düşürülmüş silahlar, grenadlar
   ├── bomb: BombData              ← bomba durumu
@@ -364,6 +386,46 @@ debug = true     # debug sembollerini korur
 ```
 
 Sadece Linux desteklenir — `#[cfg(not(target_os = "linux"))] compile_error!` ile zorlanır.
+
+---
+
+## Son Değişiklikler (upstream + yerel)
+
+### upstream `03fda12` — `32860ba`, `48a1a71` (Mayıs 2026)
+| Dosya | Değişiklik |
+|-------|-----------|
+| `cs2/features/aimbot.rs` | `aimbot()` artık `bool` döndürür |
+| `cs2/features/rcs.rs` | Humanized RCS: velocity + accel_history + soft_clamp |
+| `cs2/mod.rs` | RCS yalnızca aimbot inactive ise çalışır |
+| `math.rs` | `weighted_average`, `compute_max_acceleration`, `soft_clamp_acceleration`, `record_acceleration` |
+
+### upstream `bd3cc26`, `7b28bdc` — sniper crosshair + gap
+| Dosya | Değişiklik |
+|-------|-----------|
+| `config.rs` | `CrosshairConfig` struct: line_length, line_width, gap |
+| `ui/gui/hud.rs` | CrosshairConfig UI kontrolleri |
+| `ui/overlay/hud.rs` | Gap destekli sniper crosshair çizimi |
+
+### upstream `ed585c5`, `abab536` — spectator list
+| Dosya | Değişiklik |
+|-------|-----------|
+| `data.rs` | `spectators: Vec<String>` alanı |
+| `cs2/mod.rs` | `spectator_target()` kontrolü; cache temizleme |
+| `config.rs` | `HudConfig::spectator_list: bool` |
+
+### upstream `aaf0508`, `6038eb6` — FPS/timing düzeltmesi
+| Dosya | Değişiklik |
+|-------|-----------|
+| `game.rs` | `loop_duration()` sabit 10ms (config.fps yerine) |
+| `ui/app.rs` | `new_events()` frame timing yeniden yazıldı; drift önleme |
+
+### Yerel iyileştirmeler (bu oturum)
+| Dosya | Değişiklik |
+|-------|-----------|
+| `cs2/features/aimbot.rs` | `Aimbot::velocity: Vec2` eklendi; üstel lerp smoothing; aşım koruması; tuş bırakınca sönümleme |
+| `cs2/mod.rs` | `visibility_cache: HashMap<u64, Instant>` — 350ms ESP hysteresis; 2s cache temizleme |
+| `ui/window_context.rs` | `gui_style` yeniden yazıldı: corner radius, shadow, spacing, widget depth |
+| `ui/gui/mod.rs` | Sidebar: 140px sabit genişlik, BACKDROP arka plan, tam genişlik butonlar, renkli durum göstergesi |
 
 ---
 

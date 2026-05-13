@@ -59,6 +59,7 @@ impl App {
         self.draw_sniper_crosshair(&painter, data);
         self.draw_keybind_list(&painter, data);
         self.draw_spectator_list(&painter, data);
+        self.draw_watermark(&painter, data);
 
         if data.aimbot_active {
             self.text(
@@ -87,6 +88,7 @@ impl App {
         }
 
         self.grenade_manager(data, &painter);
+        self.draw_grenade_trajectory(&painter, data);
     }
 
     fn update_window(&self, data: &Data) {
@@ -283,6 +285,174 @@ impl App {
                     Align2::CENTER_TOP,
                     None,
                 );
+            }
+        }
+    }
+
+    /// Draw a simulated parabolic trajectory arc when the local player holds any grenade.
+    /// For HE grenades, also shows estimated remaining HP for each visible enemy.
+    fn draw_grenade_trajectory(&self, painter: &Painter, data: &Data) {
+        use crate::cs2::entity::weapon::Weapon;
+
+        let is_grenade = matches!(
+            data.local_player.weapon,
+            Weapon::HeGrenade
+                | Weapon::Flashbang
+                | Weapon::Smoke
+                | Weapon::Molotov
+                | Weapon::Incendiary
+                | Weapon::Decoy
+        );
+        if !is_grenade {
+            return;
+        }
+
+        let throw_origin = data.local_player.head;
+        let pitch = data.view_angles.x.to_radians();
+        let yaw = data.view_angles.y.to_radians();
+
+        // Approximate CS2 overhand grenade throw speed (left-click)
+        const THROW_SPEED: f32 = 750.0;
+        const GRAVITY: f32 = 800.0;
+
+        let vx = pitch.cos() * yaw.cos() * THROW_SPEED;
+        let vy = pitch.cos() * yaw.sin() * THROW_SPEED;
+        let vz = -pitch.sin() * THROW_SPEED;
+
+        // Floor level: player's feet z minus a small margin
+        let floor_z = data.local_player.position.z - 20.0;
+
+        let line_color = match data.local_player.weapon {
+            Weapon::HeGrenade  => Color32::from_rgba_unmultiplied(255, 220, 50, 200),
+            Weapon::Flashbang  => Color32::from_rgba_unmultiplied(255, 255, 160, 200),
+            Weapon::Smoke      => Color32::from_rgba_unmultiplied(140, 200, 140, 200),
+            Weapon::Molotov | Weapon::Incendiary
+                               => Color32::from_rgba_unmultiplied(255, 110, 40, 200),
+            _                  => Color32::from_rgba_unmultiplied(210, 210, 210, 200),
+        };
+        let stroke = Stroke::new(1.5, line_color);
+
+        let mut last_screen: Option<egui::Pos2> = None;
+        let mut landing_pos: Option<glam::Vec3> = None;
+
+        const DT: f32 = 0.05;
+        for step in 0..60 {
+            let t = step as f32 * DT;
+            let pos = glam::Vec3::new(
+                throw_origin.x + vx * t,
+                throw_origin.y + vy * t,
+                throw_origin.z + vz * t - 0.5 * GRAVITY * t * t,
+            );
+
+            if pos.z < floor_z {
+                landing_pos = Some(pos);
+                break;
+            }
+            landing_pos = Some(pos);
+
+            if let Some(screen_pos) = world_to_screen(&pos, data) {
+                if let Some(last) = last_screen {
+                    // Draw every other segment to create a dashed look
+                    if step % 2 == 0 {
+                        painter.line_segment([last, screen_pos], stroke);
+                    }
+                }
+                last_screen = Some(screen_pos);
+            } else {
+                last_screen = None;
+            }
+        }
+
+        // Draw landing marker
+        if let Some(land) = landing_pos {
+            if let Some(land_screen) = world_to_screen(&land, data) {
+                painter.circle_stroke(
+                    land_screen,
+                    6.0,
+                    Stroke::new(1.5, line_color),
+                );
+            }
+
+            // HE grenade: show estimated remaining HP for each enemy near landing.
+            // - Uses world_to_screen_loose so off-screen enemies still show
+            // - Also paints a summary near the landing marker
+            if data.local_player.weapon == Weapon::HeGrenade {
+                use crate::math::world_to_screen_loose;
+
+                const HE_RADIUS: f32 = 350.0;
+                let mut summary_lines: Vec<(String, Color32)> = Vec::new();
+
+                for player in &data.players {
+                    if player.health <= 0 {
+                        continue;
+                    }
+                    let dist = player.position.distance(land);
+                    if dist > HE_RADIUS {
+                        continue;
+                    }
+                    // CS2 HE: ~98 raw damage at 0, falls off linearly to 0 at ~350 units
+                    let raw = 98.0 * (1.0 - dist / HE_RADIUS);
+                    // Armor absorbs ~30% of HE damage (rough approximation)
+                    let hp_damage = if player.armor > 0 { raw * 0.70 } else { raw };
+                    let remaining = (player.health as f32 - hp_damage).max(0.0) as i32;
+                    let kill = remaining == 0;
+
+                    let dmg_color = if kill {
+                        Color32::from_rgb(255, 60, 60)
+                    } else if hp_damage >= 50.0 {
+                        Color32::from_rgb(255, 160, 50)
+                    } else {
+                        Color32::from_rgb(255, 220, 80)
+                    };
+
+                    // Per-enemy floating label (above their head)
+                    if let Some(head_screen) = world_to_screen_loose(&player.head, data) {
+                        let text = if kill {
+                            format!("\u{2620} {:.0}dmg", hp_damage)
+                        } else {
+                            format!("HE\u{2192}{}hp ({:.0}dmg)", remaining, hp_damage)
+                        };
+                        self.text_sized(
+                            painter,
+                            text,
+                            egui::pos2(head_screen.x, head_screen.y - 14.0),
+                            Align2::CENTER_BOTTOM,
+                            Some(dmg_color),
+                            self.config.hud.font_size,
+                        );
+                    }
+
+                    // Always add to landing-zone summary too
+                    let label = player
+                        .name
+                        .chars()
+                        .take(10)
+                        .collect::<String>();
+                    let line = if kill {
+                        format!("{}: \u{2620} ({:.0})", label, hp_damage)
+                    } else {
+                        format!("{}: -{:.0} ({}\u{2192}{})", label, hp_damage, player.health, remaining)
+                    };
+                    summary_lines.push((line, dmg_color));
+                }
+
+                // Landing-marker summary text (always on-screen if landing is on-screen)
+                if !summary_lines.is_empty()
+                    && let Some(land_screen) = world_to_screen(&land, data)
+                {
+                    let mut y = land_screen.y + 10.0;
+                    for (line, col) in summary_lines {
+                        self.text_sized(
+                            painter,
+                            line,
+                            egui::pos2(land_screen.x, y),
+                            Align2::CENTER_TOP,
+                            Some(col),
+                            self.config.hud.font_size,
+                        );
+                        y += self.config.hud.font_size + 2.0;
+                    }
+                }
             }
         }
     }

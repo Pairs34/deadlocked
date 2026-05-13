@@ -78,6 +78,23 @@ pub enum Weapon {
 }
 
 impl Weapon {
+    /// UI'da silah listesinde gösterilmesi gereken silahlar için `true` döner.
+    /// Unknown, C4, El bombası, Taser gibi alakasız silahlar filtrelenir.
+    pub fn is_relevant(&self) -> bool {
+        !matches!(
+            self,
+            Weapon::Unknown
+                | Weapon::C4
+                | Weapon::Taser
+                | Weapon::Flashbang
+                | Weapon::HeGrenade
+                | Weapon::Smoke
+                | Weapon::Molotov
+                | Weapon::Decoy
+                | Weapon::Incendiary
+        )
+    }
+
     pub fn from_handle(handle: i32, cs2: &CS2) -> Option<Self> {
         if handle == 0 {
             return None;

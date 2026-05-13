@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::{collections::HashMap, time::{Duration, Instant}};
 
 use glam::{IVec2, Mat4, Vec2, Vec3};
 
@@ -50,6 +50,8 @@ pub struct CS2 {
     weapon: Weapon,
     planted_c4: Option<PlantedC4>,
     last_cache: Instant,
+    /// steam_id → last time this player was spotted. Used for visibility hysteresis.
+    visibility_cache: HashMap<u64, Instant>,
 }
 
 impl CS2 {
@@ -109,6 +111,13 @@ impl CS2 {
         self.no_flash(config);
         self.fov_changer(config);
 
+        if config.misc.radar_hack {
+            let local_pawn_index = self.target.local_pawn_index;
+            for player in &self.players {
+                player.set_spotted_by_local(self, local_pawn_index);
+            }
+        }
+
         self.esp_toggle(config);
 
         self.triggerbot(config);
@@ -122,7 +131,7 @@ impl CS2 {
         }
     }
 
-    pub fn data(&self, config: &Config, data: &mut Data) {
+    pub fn data(&mut self, config: &Config, data: &mut Data) {
         data.players.clear();
         data.friendlies.clear();
         data.spectators.clear();
@@ -159,8 +168,24 @@ impl CS2 {
                 data.spectators.push(player.name(self));
             }
 
+            let steam_id = player.steam_id(self);
+            let raw_visible = player.visible(self, &local_player);
+
+            // Hysteresis: keep a player visible for 350 ms after they were last spotted.
+            // This prevents flickering caused by BVH ray-cast noise or spotted-mask jitter.
+            const VISIBILITY_HOLD: Duration = Duration::from_millis(350);
+            if raw_visible {
+                self.visibility_cache.insert(steam_id, Instant::now());
+            }
+            let visible = raw_visible
+                || self
+                    .visibility_cache
+                    .get(&steam_id)
+                    .map(|t| t.elapsed() < VISIBILITY_HOLD)
+                    .unwrap_or(false);
+
             let player_data = PlayerData {
-                steam_id: player.steam_id(self),
+                steam_id,
                 health: player.health(self),
                 armor: player.armor(self),
                 position: player.position(self),
@@ -172,7 +197,7 @@ impl CS2 {
                 has_defuser: player.has_defuser(self),
                 has_helmet: player.has_helmet(self),
                 has_bomb: player.has_bomb(self),
-                visible: player.visible(self, &local_player),
+                visible,
                 color: player.color(self),
                 rotation: player.rotation(self),
                 sound: player.is_making_sound(self),
@@ -238,6 +263,9 @@ impl CS2 {
         data.in_game = true;
         data.is_ffa = self.is_ffa();
         data.map_name = self.current_map();
+
+        // Prune stale visibility cache entries (> 2 s old) to avoid unbounded growth.
+        self.visibility_cache.retain(|_, t| t.elapsed() < Duration::from_secs(2));
         data.aimbot_active = if self.aimbot_config(config).mode == KeyMode::Toggle {
             self.aim.active
         } else {
@@ -282,6 +310,7 @@ impl CS2 {
             weapon: Weapon::default(),
             planted_c4: None,
             last_cache: Instant::now(),
+            visibility_cache: HashMap::new(),
         }
     }
 

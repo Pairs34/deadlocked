@@ -1,107 +1,128 @@
-use egui::{DragValue, Ui};
+use egui::Ui;
 
 use crate::ui::{
     app::App,
-    gui::helpers::{collapsing_open, color_picker},
+    gui::{
+        components::{matches_filter, setting_row, slider, switch, titled_card},
+        helpers::{color_picker, scroll},
+    },
 };
 
 impl App {
     pub fn unsafe_settings(&mut self, ui: &mut Ui) {
-        ui.columns(2, |cols| {
-            let left = &mut cols[0];
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, true])
-                .id_salt("unsafe_left")
-                .show(left, |left| {
-                    self.unsafe_left(left);
-                });
+        let l = self.lang();
+        let filter = self.search_query.clone();
+        scroll(ui, "unsafe", |ui| {
+            ui.columns(2, |cols| {
+                self.unsafe_left(&mut cols[0], &filter);
+                self.unsafe_right(&mut cols[1], &filter);
+            });
+        });
+        // Avoid lang move warning across closures.
+        let _ = l;
+    }
 
-            let right = &mut cols[1];
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, true])
-                .id_salt("unsafe_right")
-                .show(right, |right| {
-                    self.unsafe_right(right);
-                });
+    fn unsafe_left(&mut self, ui: &mut Ui, filter: &str) {
+        let l = self.lang();
+
+        titled_card(ui, l.section_no_flash, |ui| {
+            if matches_filter(filter, l.unsafe_no_flash) {
+                let mut v = self.config.misc.no_flash;
+                if setting_row(ui, l.unsafe_no_flash, Some(l.tip_no_flash), |ui| {
+                    switch(ui, &mut v).changed()
+                }) {
+                    self.config.misc.no_flash = v;
+                    self.send_config();
+                }
+            }
+            if matches_filter(filter, l.unsafe_max_flash)
+                && setting_row(ui, l.unsafe_max_flash, Some(l.tip_unsafe_max_flash), |ui| {
+                    slider(
+                        ui,
+                        &mut self.config.misc.max_flash_alpha,
+                        0.0..=255.0,
+                        "",
+                        0,
+                    )
+                })
+            {
+                self.send_config();
+            }
         });
 
-        collapsing_open(ui, "Smokes", |ui| {
-            if ui
-                .checkbox(&mut self.config.misc.no_smoke, "No Smoke")
-                .changed()
-            {
-                self.send_config();
+        titled_card(ui, l.section_fov_changer, |ui| {
+            if matches_filter(filter, l.unsafe_fov_changer) {
+                let mut v = self.config.misc.fov_changer;
+                if setting_row(ui, l.unsafe_fov_changer, Some(l.tip_fov_changer), |ui| {
+                    switch(ui, &mut v).changed()
+                }) {
+                    self.config.misc.fov_changer = v;
+                    self.send_config();
+                }
             }
-
-            if ui
-                .checkbox(
-                    &mut self.config.misc.change_smoke_color,
-                    "Change Smoke Color",
-                )
-                .changed()
+            if matches_filter(filter, l.unsafe_desired_fov)
+                && setting_row(ui, l.unsafe_desired_fov, None, |ui| {
+                    let changed = slider(
+                        ui,
+                        &mut self.config.misc.desired_fov,
+                        1.0..=179.0,
+                        "°",
+                        0,
+                    );
+                    if ui.button("↺").clicked() {
+                        self.config.misc.desired_fov = crate::constants::cs2::DEFAULT_FOV;
+                        return true;
+                    }
+                    changed
+                })
             {
-                self.send_config();
-            }
-
-            if color_picker(ui, "Smoke Color", &mut self.config.misc.smoke_color) {
                 self.send_config();
             }
         });
     }
 
-    fn unsafe_left(&mut self, ui: &mut Ui) {
-        collapsing_open(ui, "No Flash", |ui| {
-            if ui
-                .checkbox(&mut self.config.misc.no_flash, "No Flash")
-                .changed()
+    fn unsafe_right(&mut self, ui: &mut Ui, filter: &str) {
+        let l = self.lang();
+
+        titled_card(ui, l.section_smokes, |ui| {
+            if matches_filter(filter, l.unsafe_no_smoke) {
+                let mut v = self.config.misc.no_smoke;
+                if setting_row(ui, l.unsafe_no_smoke, Some(l.tip_no_smoke), |ui| {
+                    switch(ui, &mut v).changed()
+                }) {
+                    self.config.misc.no_smoke = v;
+                    self.send_config();
+                }
+            }
+            if matches_filter(filter, l.unsafe_change_smoke_color) {
+                let mut v = self.config.misc.change_smoke_color;
+                if setting_row(
+                    ui,
+                    l.unsafe_change_smoke_color,
+                    Some(l.tip_change_smoke_color),
+                    |ui| switch(ui, &mut v).changed(),
+                ) {
+                    self.config.misc.change_smoke_color = v;
+                    self.send_config();
+                }
+            }
+            if matches_filter(filter, l.unsafe_smoke_color)
+                && color_picker(ui, l.unsafe_smoke_color, &mut self.config.misc.smoke_color)
             {
                 self.send_config();
             }
-
-            ui.horizontal(|ui| {
-                if ui
-                    .add(
-                        DragValue::new(&mut self.config.misc.max_flash_alpha)
-                            .range(0.0..=255.0)
-                            .speed(0.5)
-                            .max_decimals(0),
-                    )
-                    .changed()
-                {
-                    self.send_config();
-                }
-                ui.label("Max Flash Alpha");
-            });
         });
-    }
 
-    fn unsafe_right(&mut self, ui: &mut Ui) {
-        collapsing_open(ui, "FOV Changer", |ui| {
-            if ui
-                .checkbox(&mut self.config.misc.fov_changer, "FOV Changer")
-                .changed()
-            {
-                self.send_config();
+        titled_card(ui, l.section_radar, |ui| {
+            if matches_filter(filter, l.radar_enable) {
+                let mut v = self.config.misc.radar_hack;
+                if setting_row(ui, l.radar_enable, Some(l.tip_radar_enable), |ui| {
+                    switch(ui, &mut v).changed()
+                }) {
+                    self.config.misc.radar_hack = v;
+                    self.send_config();
+                }
             }
-
-            ui.horizontal(|ui| {
-                if ui
-                    .add(
-                        DragValue::new(&mut self.config.misc.desired_fov)
-                            .speed(0.1)
-                            .range(1..=179),
-                    )
-                    .changed()
-                {
-                    self.send_config();
-                }
-                ui.label("Desired FOV");
-
-                if ui.button("Reset").clicked() {
-                    self.config.misc.desired_fov = crate::constants::cs2::DEFAULT_FOV;
-                    self.send_config();
-                }
-            });
         });
     }
 }

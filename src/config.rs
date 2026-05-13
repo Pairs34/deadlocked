@@ -20,11 +20,27 @@ use crate::{
 pub const SLEEP_DURATION: Duration = Duration::from_secs(5);
 pub const DEFAULT_CONFIG_NAME: &str = "deadlocked.toml";
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, EnumIter)]
+pub enum Language {
+    English,
+    Turkish,
+}
+
+impl Default for Language {
+    fn default() -> Self {
+        Self::English
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ApplicationConfig {
     pub first_launch: bool,
     pub send_stacktraces: bool,
+    pub language: Language,
+    /// File name (e.g. "myconfig.toml") of the config to load on startup.
+    /// None → fall back to DEFAULT_CONFIG_NAME.
+    pub default_config: Option<String>,
 }
 
 impl Default for ApplicationConfig {
@@ -32,6 +48,8 @@ impl Default for ApplicationConfig {
         Self {
             first_launch: true,
             send_stacktraces: true,
+            language: Language::default(),
+            default_config: None,
         }
     }
 }
@@ -78,6 +96,89 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// VAC güvenli, "legit" oynanabilecek varsayılan ayar.
+    /// - Player ESP aktif (sadece okuma, tespit edilmez)
+    /// - Aimbot, Triggerbot, RCS tamamen kapalı
+    /// - No-flash, FOV değiştirici, No-smoke kapalı (belleğe yazıyor)
+    pub fn legit() -> Self {
+        let mut weapons = HashMap::new();
+        for weapon in Weapon::iter() {
+            weapons.insert(weapon, WeaponConfig::default());
+        }
+
+        Self {
+            aim: AimConfig {
+                aimbot_hotkey: KeyCode::Mouse5,
+                triggerbot_hotkey: KeyCode::Mouse4,
+                global: WeaponConfig {
+                    aimbot: AimbotConfig {
+                        enable_override: false,
+                        enabled: false,
+                        mode: KeyMode::Hold,
+                        fov: 3.0,
+                        smooth: 10.0,
+                        visibility_check: true,
+                        flash_check: true,
+                        start_bullet: 1,
+                        distance_adjusted_fov: true,
+                        target_friendlies: false,
+                        bones: vec![Bones::Head, Bones::Neck],
+                        targeting_mode: TargetingMode::Fov,
+                    },
+                    rcs: RcsConfig {
+                        enable_override: false,
+                        enabled: false,
+                        mode: RcsMode::Standalone,
+                        strength: glam::Vec2::splat(0.5),
+                        smoothing: 0.0,
+                    },
+                    triggerbot: TriggerbotConfig {
+                        enable_override: false,
+                        enabled: false,
+                        ..TriggerbotConfig::default()
+                    },
+                },
+                weapons,
+            },
+            player: PlayerConfig {
+                enabled: true,
+                esp_hotkey: KeyCode::X,
+                show_friendlies: false,
+                draw_box: DrawMode::Health,
+                box_mode: BoxMode::Gap,
+                box_visible_color: egui::Color32::WHITE,
+                box_invisible_color: egui::Color32::RED,
+                draw_skeleton: DrawMode::None,
+                skeleton_color: egui::Color32::WHITE,
+                head_circle: false,
+                health_bar: true,
+                armor_bar: true,
+                player_name: true,
+                name_color: egui::Color32::WHITE,
+                weapon_icon: true,
+                weapon_icon_color: egui::Color32::WHITE,
+                tags: false,
+                tag_color: egui::Color32::WHITE,
+                visible_only: false,
+                sound: SoundConfig::default(),
+            },
+            hud: HudConfig {
+                bomb_timer: true,
+                spectator_list: true,
+                dropped_weapons: true,
+                keybind_list: false,
+                fov_circle: false,
+                grenade_trails: false,
+                ..HudConfig::default()
+            },
+            misc: UnsafeConfig::default(), // hepsi kapalı (yazım gerektiriyor)
+            accent_color: Colors::BLUE,
+            fps: 120,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WeaponConfig {
@@ -96,6 +197,20 @@ impl WeaponConfig {
             aimbot,
             rcs: RcsConfig::default(),
             triggerbot: TriggerbotConfig::default(),
+        }
+    }
+
+    /// Sıfırlama için: tüm override'lar kapalı, tüm aktif bayraklar false.
+    /// Global ayarlar geçerli olur; UI'da hiçbir şey "aktif" görünmez.
+    pub fn reset() -> Self {
+        Self {
+            aimbot: AimbotConfig {
+                enable_override: false,
+                enabled: false,
+                ..AimbotConfig::default()
+            },
+            rcs: RcsConfig::default(),         // default: enabled: false, enable_override: false
+            triggerbot: TriggerbotConfig::default(), // default: enabled: false, enable_override: false
         }
     }
 }
@@ -149,7 +264,10 @@ impl Default for AimbotConfig {
 pub struct RcsConfig {
     pub enable_override: bool,
     pub enabled: bool,
+    pub mode: RcsMode,
     pub strength: Vec2,
+    /// Smoothing factor (0.0 = instant, 0.9 = heavy). Applied as EMA over frames.
+    pub smoothing: f32,
 }
 
 impl Default for RcsConfig {
@@ -157,15 +275,26 @@ impl Default for RcsConfig {
         Self {
             enable_override: false,
             enabled: false,
+            mode: RcsMode::Standalone,
             strength: Vec2::splat(0.5),
+            smoothing: 0.0,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, EnumIter)]
+pub enum RcsMode {
+    /// RCS çalışır, aimbot aktif olmasa bile geri tepmeyi telafi eder
+    Standalone,
+    /// Sadece aimbot bir hedefe kilitliyken RCS aktif olur
+    Aiming,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, EnumIter)]
 pub enum KeyMode {
     Hold,
     Toggle,
+    Always,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, EnumIter)]
@@ -187,6 +316,11 @@ pub struct TriggerbotConfig {
     pub velocity_check: bool,
     pub velocity_threshold: f32,
     pub head_only: bool,
+    /// When true, fire even if the crosshair is not directly on an enemy
+    /// (e.g. pointing at a wall) as long as an enemy lies along the aim ray.
+    /// Per-weapon (penetration capability) lets the player decide which guns
+    /// can wallbang.
+    pub wallbang: bool,
 }
 
 impl Default for TriggerbotConfig {
@@ -202,6 +336,7 @@ impl Default for TriggerbotConfig {
             velocity_check: true,
             velocity_threshold: 100.0,
             head_only: false,
+            wallbang: false,
         }
     }
 }
@@ -260,8 +395,11 @@ pub struct PlayerConfig {
     pub health_bar: bool,
     pub armor_bar: bool,
     pub player_name: bool,
+    pub name_color: Color32,
     pub weapon_icon: bool,
+    pub weapon_icon_color: Color32,
     pub tags: bool,
+    pub tag_color: Color32,
     pub visible_only: bool,
     pub sound: SoundConfig,
 }
@@ -282,8 +420,11 @@ impl Default for PlayerConfig {
             health_bar: true,
             armor_bar: true,
             player_name: true,
+            name_color: Color32::WHITE,
             weapon_icon: true,
+            weapon_icon_color: Color32::WHITE,
             tags: true,
+            tag_color: Color32::WHITE,
             visible_only: false,
             sound: SoundConfig::default(),
         }
@@ -318,6 +459,34 @@ impl Default for SoundConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct RadarConfig {
+    pub enabled: bool,
+    pub size: f32,
+    pub zoom: f32,
+    pub rotate_with_player: bool,
+    pub show_names: bool,
+    pub background_alpha: u8,
+    pub pos_x: f32,
+    pub pos_y: f32,
+}
+
+impl Default for RadarConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            size: 200.0,
+            zoom: 0.1,
+            rotate_with_player: true,
+            show_names: false,
+            background_alpha: 160,
+            pos_x: 10.0,
+            pos_y: 10.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HudConfig {
     pub bomb_timer: bool,
     pub fov_circle: bool,
@@ -338,6 +507,7 @@ pub struct HudConfig {
     pub font_size: f32,
     pub icon_size: f32,
     pub debug: bool,
+    pub radar: RadarConfig,
 }
 
 impl Default for HudConfig {
@@ -362,6 +532,7 @@ impl Default for HudConfig {
             font_size: 16.0,
             icon_size: 20.0,
             debug: false,
+            radar: RadarConfig::default(),
         }
     }
 }
@@ -397,6 +568,7 @@ pub struct UnsafeConfig {
     pub no_smoke: bool,
     pub change_smoke_color: bool,
     pub smoke_color: Color32,
+    pub radar_hack: bool,
 }
 
 impl Default for UnsafeConfig {
@@ -409,6 +581,7 @@ impl Default for UnsafeConfig {
             no_smoke: false,
             change_smoke_color: false,
             smoke_color: Color32::RED,
+            radar_hack: false,
         }
     }
 }

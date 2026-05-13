@@ -92,20 +92,63 @@ pub fn world_to_screen(position: &Vec3, data: &crate::data::Data) -> Option<egui
     Some(egui::pos2(screen_position.x, screen_position.y))
 }
 
-pub fn weighted_average(history: &std::collections::VecDeque<f32>) -> f32 {
-    if history.is_empty() {
+/// Like `world_to_screen` but does not cull positions outside the screen viewport.
+/// Returns `None` only when the point is behind the camera (w ≤ 0).
+/// Coordinates are clamped to a generous off-screen margin so boxes stay drawable
+/// even when a player is at very close range and partially off-screen.
+pub fn world_to_screen_loose(position: &Vec3, data: &crate::data::Data) -> Option<egui::Pos2> {
+    let vm = &data.view_matrix;
+    let mut screen_position = Vec2::new(
+        vm.x_axis.x * position.x
+            + vm.x_axis.y * position.y
+            + vm.x_axis.z * position.z
+            + vm.x_axis.w,
+        vm.y_axis.x * position.x
+            + vm.y_axis.y * position.y
+            + vm.y_axis.z * position.z
+            + vm.y_axis.w,
+    );
+
+    let w = vm.w_axis.x * position.x
+        + vm.w_axis.y * position.y
+        + vm.w_axis.z * position.z
+        + vm.w_axis.w;
+
+    if w < 0.0001 {
+        return None;
+    }
+
+    screen_position /= w;
+
+    let half_size = Vec2::new(data.window_size.x * 0.5, data.window_size.y * 0.5);
+
+    screen_position.x = half_size.x + 0.5 * screen_position.x * data.window_size.x + 0.5;
+    screen_position.y = half_size.y - 0.5 * screen_position.y * data.window_size.y + 0.5;
+
+    // Allow a generous margin outside screen bounds so close-range boxes are not culled.
+    let margin = data.window_size.y * 2.0;
+    screen_position.x = screen_position.x.clamp(-margin, data.window_size.x + margin);
+    screen_position.y = screen_position.y.clamp(-margin, data.window_size.y + margin);
+
+    Some(egui::pos2(screen_position.x, screen_position.y))
+}
+
+#[allow(dead_code)]
+pub fn weighted_average(history: impl Iterator<Item = f32> + ExactSizeIterator) -> f32 {
+    if history.len() == 0 {
         return 0.0;
     }
 
-    let (sum, weight_sum) = history.iter().enumerate().fold((0.0, 0.0), |(s, w), (i, v)| {
+    let (sum, weight_sum) = history.enumerate().fold((0.0f32, 0.0f32), |(s, w), (i, v)| {
         let weight = 1.0 + i as f32 * 0.15;
         (s + v * weight, w + weight)
     });
     sum / weight_sum
 }
 
+#[allow(dead_code)]
 pub fn compute_max_acceleration(
-    history: &std::collections::VecDeque<f32>,
+    history: impl Iterator<Item = f32> + ExactSizeIterator,
     multiplier: f32,
     range: (f32, f32),
     fallback: f32,
@@ -117,6 +160,7 @@ pub fn compute_max_acceleration(
     (weighted_average(history) * multiplier).clamp(range.0, range.1)
 }
 
+#[allow(dead_code)]
 pub fn soft_clamp_acceleration(accel: f32, max_accel: f32, decay_rate: f32) -> f32 {
     if accel.abs() <= max_accel {
         return accel;
@@ -126,6 +170,7 @@ pub fn soft_clamp_acceleration(accel: f32, max_accel: f32, decay_rate: f32) -> f
     accel.signum() * (max_accel + excess * (-excess * decay_rate).exp())
 }
 
+#[allow(dead_code)]
 pub fn record_acceleration(history: &mut std::collections::VecDeque<Vec2>, value: Vec2, max_size: usize) {
     if value.x.abs() < 25.0 && value.y.abs() < 25.0 {
         history.push_front(value.abs());
